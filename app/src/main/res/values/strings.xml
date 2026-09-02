@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">pdfcsv</string>
+    <string name="choose_file">Choose document</string>
+    <string name="create_csv">Create CSV</string>
+    <string name="create_anki">Create Anki APKG</string>
+    <string name="convert">Convert</string>
+    <string name="no_file">No file selected</string>
+</resources>
