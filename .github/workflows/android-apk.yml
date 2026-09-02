@@ -1,2 +1,193 @@
-name: ChatGPT GitHub Action
-uses: dlidstrom/genai-code-review@v3.0.8
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+
+  pull_request:
+    branches:
+      - main
+      - master
+
+  # Allows you to press "Run workflow" from GitHub's Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+
+      # ------------------------------------------------------------
+      # 1. Get the pdfcsv source code
+      # ------------------------------------------------------------
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------------
+      # 2. Java
+      #
+      # Android Gradle Plugin 8.x requires Java 17.
+      # ------------------------------------------------------------
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+
+      # ------------------------------------------------------------
+      # 3. Android SDK
+      # ------------------------------------------------------------
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+
+      # ------------------------------------------------------------
+      # 4. Android platform, build tools, NDK and CMake
+      #
+      # pdfcsv contains native C++ code, so the NDK and CMake
+      # are required in addition to the normal Android SDK.
+      # ------------------------------------------------------------
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+
+
+      # ------------------------------------------------------------
+      # 5. Gradle
+      #
+      # This deliberately installs Gradle rather than depending on
+      # gradle-wrapper.jar being present in the repository.
+      # ------------------------------------------------------------
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+
+      # ------------------------------------------------------------
+      # 6. Make sure the Android project was uploaded correctly.
+      # ------------------------------------------------------------
+
+      - name: Verify Android project files
+        shell: bash
+        run: |
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/cpp/CMakeLists.txt
+
+          echo "Android project structure looks OK."
+
+
+      # ------------------------------------------------------------
+      # 7. Test the portable C++ pdfcsv semantic engine.
+      #
+      # This catches ordinary C++ errors before spending time on
+      # the complete Android/NDK compilation.
+      # ------------------------------------------------------------
+
+      - name: Compile native core smoke test
+        shell: bash
+        run: |
+          g++ \
+            -std=c++20 \
+            -O2 \
+            -Wall \
+            -Wextra \
+            -Wpedantic \
+            app/src/main/cpp/PdfCsvCore.cpp \
+            app/src/main/cpp/host_test.cpp \
+            -o /tmp/pdfcsv-host-test
+
+          /tmp/pdfcsv-host-test
+
+
+      # ------------------------------------------------------------
+      # 8. Build the Android debug APK.
+      #
+      # The Android Gradle plugin invokes CMake/NDK for the native
+      # C++ portion of pdfcsv.
+      # ------------------------------------------------------------
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
+
+
+      # ------------------------------------------------------------
+      # 9. Make sure an APK was actually produced.
+      # ------------------------------------------------------------
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+          echo "APK successfully built:"
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+
+      # ------------------------------------------------------------
+      # 10. Upload the finished APK.
+      #
+      # It will appear at the bottom of the completed Actions run
+      # under the "Artifacts" heading.
+      # ------------------------------------------------------------
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcsv-android-debug-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # ------------------------------------------------------------
+      # 11. If something goes wrong, preserve useful Gradle reports.
+      # ------------------------------------------------------------
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcsv-build-reports-${{ github.run_number }}
+          path: |
+            app/build/reports/**
+            app/build/outputs/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
